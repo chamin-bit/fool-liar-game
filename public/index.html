@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>바보 라이어</title>
+  <meta name="description" content="링크 하나로 친구들과 바로 하는 온라인 바보 라이어 게임" />
+  <meta property="og:title" content="바보 라이어 🤪" />
+  <meta property="og:description" content="링크 눌러서 바로 참가하세요!" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- 홈 -->
+  <main id="home" class="screen hidden">
+    <div class="home-card">
+      <div class="logo">🤪</div>
+      <h1>바보 라이어</h1>
+      <p class="sub">라이어도 자기가 라이어인 줄 모른다.<br />링크 하나로 바로 시작하세요.</p>
+      <label class="field">
+        <span>닉네임</span>
+        <input id="homeName" maxlength="12" placeholder="예) 차민" autocomplete="nickname" />
+      </label>
+      <button id="createBtn" class="btn primary big">방 만들기</button>
+      <div class="divider"><span>또는</span></div>
+      <div class="row">
+        <input id="joinCode" placeholder="방 코드 (예: canif-ureko)" />
+        <button id="joinBtn" class="btn">입장</button>
+      </div>
+      <details class="rules">
+        <summary>게임 방법</summary>
+        <ol>
+          <li>방장이 카테고리와 모드를 고르고 시작해요.</li>
+          <li><b>일반 모드</b>: 라이어만 제시어를 몰라요.<br /><b>바보 모드</b>: 라이어도 단어를 받지만 <em>다른 단어</em>예요. 본인이 라이어인지 몰라요!</li>
+          <li>순서대로 한 명씩 제시어에 대한 힌트를 말해요.</li>
+          <li>토론 후 라이어로 의심되는 사람에게 투표 → 지목된 사람이 해명 → 찬반 최종 투표.</li>
+          <li>라이어가 맞으면 라이어가 정답을 맞힐 마지막 기회! 맞히면 라이어 역전승.</li>
+          <li>합의에 실패하면 힌트 라운드를 한 번 더 (최대 3라운드).</li>
+        </ol>
+      </details>
+    </div>
+  </main>
+
+  <!-- 이름 입력 (링크로 들어온 경우) -->
+  <main id="nameGate" class="screen hidden">
+    <div class="home-card">
+      <div class="logo">🎭</div>
+      <h1>방에 참가하기</h1>
+      <p class="sub" id="gateCode"></p>
+      <label class="field">
+        <span>닉네임</span>
+        <input id="gateName" maxlength="12" placeholder="예) 차민" autocomplete="nickname" />
+      </label>
+      <button id="gateBtn" class="btn primary big">참가</button>
+    </div>
+  </main>
+
+  <!-- 게임방 -->
+  <div id="room" class="screen hidden">
+    <header class="topbar">
+      <a href="/" class="brand" id="homeLink">🤪 바보 라이어</a>
+      <button id="copyBtn" class="chip-btn" title="초대 링크 복사">🔗 <span id="roomCode"></span></button>
+      <button id="menuBtn" class="icon-btn" aria-label="메뉴">⋯</button>
+      <div id="menu" class="menu hidden">
+        <button data-act="force" class="host-only">⏭️ 다음 단계로 넘기기</button>
+        <button data-act="reset" class="host-only">🧹 게임 초기화</button>
+        <button data-act="leave">🚪 방 나가기</button>
+      </div>
+    </header>
+
+    <section id="players" class="players"></section>
+    <section id="wordCard" class="word-card hidden"></section>
+
+    <section id="feed" class="feed" aria-live="polite"></section>
+
+    <section id="action" class="action"></section>
+
+    <form id="chatForm" class="chatbar">
+      <input id="chatInput" maxlength="200" placeholder="자유롭게 대화하기…" autocomplete="off" />
+      <button class="btn">전송</button>
+    </form>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
