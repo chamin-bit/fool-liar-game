@@ -10,6 +10,7 @@ const MIN_PLAYERS = 3;
 const MAX_PLAYERS = 10;
 const MAX_ROUNDS = 3;
 const CATEGORIES = Object.keys(WORDS);
+const TIMER_CHOICES = [0, 10, 15, 20, 30, 45, 60, 90, 120];
 
 const app = express();
 const server = http.createServer(app);
@@ -36,15 +37,17 @@ const shuffle = (arr) => {
   return a;
 };
 const pick = (arr) => arr[crypto.randomInt(arr.length)];
-const norm = (s) => String(s || '').toLowerCase().replace(/[\s.,!?~'"()\-_]/g, '');
+const norm = (s) => String(s || '').toLowerCase().replace(/[\s.,!?~'"()\-_:]/g, '');
 const clean = (s, max) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function getRoom(code) {
   if (!rooms.has(code)) {
     rooms.set(code, {
       code, players: [], hostId: null, phase: 'lobby',
-      settings: { category: '랜덤', mode: 'fool', timers: { hint: 0, vote: 0, defense: 0 } },
+      // categories: 비어 있으면 전체에서 랜덤
+      settings: { categories: [], mode: 'fool', timers: { hint: 0, vote: 0, defense: 0 } },
       game: null, log: [], seq: 0, emptySince: null, timer: null, timerTok: 0, deadline: null,
+      used: {}, lastCategory: null, stats: {}, gameNo: 0,
     });
   }
   return rooms.get(code);
@@ -53,9 +56,15 @@ const P = (room, id) => room.players.find((p) => p.id === id);
 const nameOf = (room, id) => (P(room, id) || { name: '???' }).name;
 
 function bot(room, text) { pushLog(room, { type: 'bot', text }); }
+function pushLog(room, msg) {
+  msg.id = ++room.seq;
+  msg.t = Date.now();
+  room.log.push(msg);
+  if (room.log.length > 400) room.log.shift();
+  io.to(room.code).emit('msg', msg);
+}
 
 // ---------- 타이머 ----------
-const TIMER_CHOICES = [0, 10, 15, 20, 30, 45, 60, 90, 120];
 function arm(room, kind) {
   disarm(room);
   const sec = room.settings.timers[kind] || 0;
@@ -65,7 +74,7 @@ function arm(room, kind) {
   room.timer = setTimeout(() => {
     if (room.timerTok !== tok) return;
     room.deadline = null;
-    try { forceNext(room, true); } catch (e) { console.error(e); }
+    try { forceNext(room, '⏰ 시간 초과!'); } catch (e) { console.error(e); }
     sync(room);
   }, sec * 1000);
 }
@@ -75,15 +84,32 @@ function disarm(room) {
   room.timer = null;
   room.deadline = null;
 }
-function pushLog(room, msg) {
-  msg.id = ++room.seq;
-  msg.t = Date.now();
-  room.log.push(msg);
-  if (room.log.length > 400) room.log.shift();
-  io.to(room.code).emit('msg', msg);
+
+// ---------- 전적 (닉네임 기준, 방 안에서만 유지) ----------
+function statOf(room, name) {
+  return (room.stats[name] ||= { games: 0, wins: 0, liar: 0, liarWins: 0 });
+}
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+function rankingText(room) {
+  const rows = Object.entries(room.stats).filter(([, s]) => s.games > 0)
+    .sort((a, b) => pct(b[1].wins, b[1].games) - pct(a[1].wins, a[1].games) || b[1].wins - a[1].wins);
+  if (!rows.length) return '📊 아직 끝난 판이 없어요.';
+  const medal = ['🥇', '🥈', '🥉'];
+  return `📊 랭킹 (${room.gameNo}판)\n` + rows.map(([n, s], i) =>
+    `${medal[i] || `${i + 1}.`} ${n}  승률 ${pct(s.wins, s.games)}% (${s.wins}/${s.games})` +
+    (s.liar ? ` · 라이어 ${s.liar}회 ${s.liarWins}승` : '')).join('\n');
 }
 
-// ---------- state broadcast ----------
+// ---------- 상태 전송 ----------
+function hintSummary(room) {
+  const g = room.game;
+  return g.order.map((pid, i) => {
+    const hs = g.hints[pid].filter(Boolean);
+    const body = hs.length > 1 ? hs.map((h, r) => `[${r + 1}R] ${h}`).join(' → ') : hs[0] || '-';
+    return `${i + 1}. ${nameOf(room, pid)}: ${body}`;
+  }).join('\n');
+}
+
 function publicState(room, viewerId) {
   const g = room.game;
   const s = {
@@ -95,6 +121,8 @@ function publicState(room, viewerId) {
     minPlayers: MIN_PLAYERS,
     maxRounds: MAX_ROUNDS,
     players: room.players.map((p) => ({ id: p.id, name: p.name, online: p.online })),
+    stats: room.stats,
+    gameNo: room.gameNo,
     me: viewerId,
     timerChoices: TIMER_CHOICES,
     deadline: room.deadline,
@@ -119,10 +147,10 @@ function publicState(room, viewerId) {
     if (g.order.includes(viewerId)) {
       const isLiar = viewerId === g.liarId;
       if (g.mode === 'fool') {
-        s.mine = { word: isLiar ? g.liarWord : g.word, knowsLiar: false };
+        s.mine = { word: isLiar ? g.liarWord : g.word };
         if (isLiar && (room.phase === 'guess' || room.phase === 'end')) s.mine.revealedLiar = true;
       } else {
-        s.mine = isLiar ? { liar: true, knowsLiar: true } : { word: g.word, knowsLiar: true };
+        s.mine = isLiar ? { liar: true } : { word: g.word };
       }
     }
   }
@@ -132,13 +160,33 @@ function sync(room) {
   for (const p of room.players) if (p.socketId) io.to(p.socketId).emit('state', publicState(room, p.id));
 }
 
-// ---------- game flow ----------
+// ---------- 제시어 고르기 ----------
+function chooseCategory(room) {
+  const sel = room.settings.categories.filter((c) => CATEGORIES.includes(c));
+  const pool = sel.length ? sel : CATEGORIES;
+  const fresh = pool.length > 1 ? pool.filter((c) => c !== room.lastCategory) : pool;
+  return pick(fresh);
+}
+// 이미 나온 단어는 그 카테고리를 한 바퀴 다 돌 때까지 다시 안 나온다.
+function chooseWords(room, category) {
+  const groups = WORDS[category];
+  const used = (room.used[category] ||= new Set());
+  let options = groups.flatMap((g, gi) => g.filter((w) => !used.has(w)).map((w) => [gi, w]));
+  if (!options.length) { used.clear(); options = groups.flatMap((g, gi) => g.map((w) => [gi, w])); }
+  const [gi, word] = pick(options);
+  used.add(word);
+  const liarWord = pick(groups[gi].filter((w) => w !== word));
+  return { word, liarWord };
+}
+
+// ---------- 게임 진행 ----------
 function startGame(room) {
   const active = room.players.filter((p) => p.online);
-  if (active.length < MIN_PLAYERS) return `최소 ${MIN_PLAYERS}명이 필요해요.`;
-  const category = room.settings.category === '랜덤' ? pick(CATEGORIES) : room.settings.category;
+  if (active.length < MIN_PLAYERS) return `최소 ${MIN_PLAYERS}명이 필요해요. (지금 ${active.length}명)`;
+  const category = chooseCategory(room);
+  room.lastCategory = category;
   const mode = room.settings.mode;
-  const [word, liarWord] = shuffle(WORDS[category]);
+  const { word, liarWord } = chooseWords(room, category);
   const order = shuffle(active.map((p) => p.id));
   room.game = {
     category, mode, word, liarWord: mode === 'fool' ? liarWord : null,
@@ -147,31 +195,24 @@ function startGame(room) {
     votes: {}, candidates: [], revote: false, nominee: null, defense: null, finalVotes: {}, result: null,
   };
   room.phase = 'hint';
-  bot(room, `🎭 게임 시작!\n• 카테고리: ${category}\n• 모드: ${mode === 'fool' ? '바보 모드 🤪' : '일반 모드'}\n• 참가자: ${order.length}명\n\n화면 위쪽 카드에서 제시어를 확인하세요.` +
-    (mode === 'fool' ? '\n(바보 모드: 라이어도 제시어를 받지만 다른 단어예요. 본인이 라이어인지 아무도 몰라요!)' : ''));
+  bot(room, `🎭 게임 시작! ${category} · ${mode === 'fool' ? '바보 모드 🤪' : '일반 모드'} · ${order.length}명\n제시어는 화면 맨 위에 있어요.`);
   announceTurn(room);
+  return null;
 }
 
 function announceTurn(room) {
   const g = room.game;
-  const id = g.order[g.turnIdx];
-  bot(room, `🗣️ ${nameOf(room, id)} 님 차례입니다${g.round > 1 ? ` - ${g.round}라운드` : ''}.\n힌트를 입력하세요. 예) 매콤해요`);
+  bot(room, `🗣️ ${nameOf(room, g.order[g.turnIdx])} 님 차례${g.round > 1 ? ` (${g.round}R)` : ''}`);
   arm(room, 'hint');
 }
 
 function submitHint(room, id, text) {
   const g = room.game;
   g.hints[id][g.round - 1] = text || '(패스)';
-  bot(room, `🗣️ ${nameOf(room, id)}: ${g.hints[id][g.round - 1]}`);
+  bot(room, `💬 ${nameOf(room, id)}: ${g.hints[id][g.round - 1]}`);
   g.turnIdx++;
   if (g.turnIdx < g.order.length) return announceTurn(room);
-  // 힌트 요약 → 투표
-  const lines = g.order.map((pid, i) => {
-    const hs = g.hints[pid];
-    const body = hs.length > 1 ? hs.map((h, r) => `[${r + 1}R] ${h}`).join(' → ') : hs[0];
-    return `  ${i + 1}. ${nameOf(room, pid)}: ${body}`;
-  });
-  bot(room, `📝 힌트 요약\n${lines.join('\n')}\n\n자유롭게 토론한 뒤, 라이어로 의심되는 사람에게 투표하세요.`);
+  bot(room, `📝 힌트 요약\n${hintSummary(room)}\n\n토론하고 아래에서 투표하세요!`);
   openVote(room, [...g.order], false);
 }
 
@@ -182,22 +223,18 @@ function openVote(room, candidates, revote) {
   g.candidates = candidates;
   g.revote = revote;
   g.nominee = null; g.defense = null; g.finalVotes = {};
-  if (revote) bot(room, `⚖️ 동률입니다! 재투표를 진행합니다. (1인 1표)\n${candidates.map((c, i) => `  ${i + 1}. ${nameOf(room, c)}`).join('\n')}`);
-  else bot(room, '🗳️ 투표해 주세요! 아래 버튼에서 의심되는 사람을 고르세요.');
+  if (revote) bot(room, `⚖️ 동률! ${candidates.map((c) => nameOf(room, c)).join(' vs ')} 재투표`);
   arm(room, 'vote');
 }
 
 function castVote(room, voterId, targetId) {
   const g = room.game;
   if (!g.candidates.includes(targetId) || targetId === voterId) return;
-  const first = !(voterId in g.votes);
   g.votes[voterId] = targetId;
   const n = g.order.length;
   const count = Object.keys(g.votes).length;
-  if (first) bot(room, `🗳️ ${nameOf(room, voterId)} 투표 완료 (${count}/${n})`);
-  const tally = tallyVotes(g);
-  const top = Math.max(...Object.values(tally));
-  if (top > n / 2 && count < n) { bot(room, '⚡ 과반이 나와 조기 종료합니다.'); return closeVote(room); }
+  const top = Math.max(...Object.values(tallyVotes(g)));
+  if (top > n / 2 && count < n) return closeVote(room, true);
   if (count >= n) closeVote(room);
 }
 function tallyVotes(g) {
@@ -205,10 +242,11 @@ function tallyVotes(g) {
   for (const v of Object.values(g.votes)) if (v in t) t[v]++;
   return t;
 }
-function closeVote(room) {
+function closeVote(room, early = false) {
   const g = room.game;
   const t = tallyVotes(g);
-  bot(room, `📊 개표 결과\n${g.candidates.map((c) => `  ${nameOf(room, c)}: ${t[c]}표`).join('\n')}`);
+  const sorted = [...g.candidates].sort((a, b) => t[b] - t[a]);
+  bot(room, `📊 개표${early ? ' (과반 조기 종료)' : ''}\n${sorted.filter((c) => t[c] > 0).map((c) => `${nameOf(room, c)} ${t[c]}표`).join(' · ') || '표 없음'}`);
   const top = Math.max(...Object.values(t));
   const leaders = g.candidates.filter((c) => t[c] === top);
   if (top === 0) return failRound(room, '아무도 투표하지 않았어요.');
@@ -218,7 +256,7 @@ function closeVote(room) {
   }
   g.nominee = leaders[0];
   room.phase = 'defense';
-  bot(room, `🎤 ${nameOf(room, g.nominee)} 님이 지목되었습니다.\n해명을 입력해주세요.\n예) 제가 말한 힌트는 제시어의 모양을 표현한 거예요.`);
+  bot(room, `🎤 ${nameOf(room, g.nominee)} 님 지목! 해명하세요.`);
   arm(room, 'defense');
 }
 
@@ -227,57 +265,52 @@ function submitDefense(room, text) {
   g.defense = text || '(해명 없음)';
   room.phase = 'final';
   g.finalVotes = {};
-  bot(room, `⚖️ ${nameOf(room, g.nominee)} 님의 해명이 제출되었습니다.\n\n💬 ${g.defense}\n\n이 사람을 라이어로 지목할지 최종 투표해주세요.\n(지목 대상 본인 제외 ${g.order.length - 1}명 투표)`);
+  bot(room, `⚖️ ${nameOf(room, g.nominee)} 님 해명: ${g.defense}\n라이어로 지목할까요? 찬반 투표!`);
   arm(room, 'vote');
 }
 
 function castFinal(room, voterId, agree) {
   const g = room.game;
   if (voterId === g.nominee) return;
-  const first = !(voterId in g.finalVotes);
   g.finalVotes[voterId] = !!agree;
   const eligible = g.order.length - 1;
   const vals = Object.values(g.finalVotes);
   const yes = vals.filter(Boolean).length, no = vals.length - yes;
-  if (first) bot(room, `⚖️ 투표 완료 (${vals.length}/${eligible})`);
-  if (vals.length < eligible && (yes > eligible / 2 || no >= eligible / 2)) {
-    bot(room, '⚡ 과반이 나와 조기 종료합니다.');
-    return closeFinal(room);
-  }
+  if (vals.length < eligible && (yes > eligible / 2 || no >= eligible / 2)) return closeFinal(room, true);
   if (vals.length >= eligible) closeFinal(room);
 }
-function closeFinal(room) {
+function closeFinal(room, early = false) {
   const g = room.game;
   const vals = Object.values(g.finalVotes);
   const yes = vals.filter(Boolean).length, no = vals.length - yes;
-  bot(room, `찬성 ${yes} · 반대 ${no}`);
-  if (yes <= no) return failRound(room, '🤝 합의 실패!');
+  const tally = `찬성 ${yes} · 반대 ${no}${early ? ' (조기 종료)' : ''}`;
+  if (yes <= no) return failRound(room, `${tally} → 🤝 합의 실패!`);
   if (g.nominee === g.liarId) {
     room.phase = 'guess';
-    bot(room, `🎯 ${nameOf(room, g.nominee)} 님은 라이어였습니다!\n` +
-      (g.mode === 'fool' ? `(바보 모드: 받은 단어는 "${g.liarWord}"였어요 🤪)\n` : '') +
-      '라이어에게 마지막 기회: 시민들의 제시어를 맞혀보세요.');
+    bot(room, `${tally}\n🎯 ${nameOf(room, g.nominee)} 님은 라이어였습니다!` +
+      (g.mode === 'fool' ? ` (받은 단어: ${g.liarWord} 🤪)` : '') + '\n마지막 기회! 시민들의 제시어를 맞혀보세요.');
     arm(room, 'defense');
   } else {
-    endGame(room, 'liar', `❌ ${nameOf(room, g.nominee)} 님은 라이어가 아니었습니다!\n라이어 승리! 🎭`);
+    bot(room, tally);
+    endGame(room, 'liar', `❌ ${nameOf(room, g.nominee)} 님은 라이어가 아니었어요! 라이어 승리 🎭`);
   }
 }
 
 function failRound(room, why) {
   const g = room.game;
-  if (g.round >= MAX_ROUNDS) return endGame(room, 'liar', `${why}\n${MAX_ROUNDS}라운드 안에 라이어를 찾지 못했어요.\n라이어 승리! 🎭`);
+  if (g.round >= MAX_ROUNDS) return endGame(room, 'liar', `${why}\n${MAX_ROUNDS}라운드 안에 못 찾았어요. 라이어 승리 🎭`);
   g.round++;
   g.turnIdx = 0;
   room.phase = 'hint';
-  bot(room, `${why} 힌트 ${g.round}라운드를 진행합니다.`);
+  bot(room, `${why} 힌트 ${g.round}라운드!`);
   announceTurn(room);
 }
 
 function submitGuess(room, text) {
   const g = room.game;
   const ok = norm(text) && norm(text) === norm(g.word);
-  if (ok) endGame(room, 'liar', `⭕ 정답! (제출: ${text})\n라이어 역전승! 🎭`);
-  else endGame(room, 'citizen', `❌ 오답! (제출: ${text || '없음'})\n시민 승리! 🎉`);
+  if (ok) endGame(room, 'liar', `⭕ 정답! (${text}) 라이어 역전승 🎭`);
+  else endGame(room, 'citizen', `❌ 오답! (${text || '제출 없음'}) 시민 승리 🎉`);
 }
 
 function endGame(room, winner, headline) {
@@ -285,23 +318,87 @@ function endGame(room, winner, headline) {
   disarm(room);
   room.phase = 'end';
   g.result = { winner, word: g.word, liarWord: g.liarWord, liarId: g.liarId };
-  bot(room, `${headline}\n\n카테고리: ${g.category}\n정답 제시어: ${g.word}\n` +
-    (g.mode === 'fool' ? `라이어가 받은 단어: ${g.liarWord}\n` : '') + `라이어: ${nameOf(room, g.liarId)}`);
-  bot(room, '🔁 한 판 더? 방장이 아래 버튼으로 새 판을 시작할 수 있어요.');
+  room.gameNo++;
+  for (const id of g.order) {
+    const s = statOf(room, nameOf(room, id));
+    const isLiar = id === g.liarId;
+    const won = (winner === 'liar') === isLiar;
+    s.games++;
+    if (won) s.wins++;
+    if (isLiar) { s.liar++; if (won) s.liarWins++; }
+  }
+  bot(room, `${headline}\n\n제시어: ${g.word}` + (g.mode === 'fool' ? ` / 라이어 단어: ${g.liarWord}` : '') +
+    `\n라이어: ${nameOf(room, g.liarId)} · 카테고리: ${g.category}\n\n/시작 으로 바로 한 판 더, /랭킹 으로 전적 보기`);
 }
 
-// 방장 강제 진행 (잠수/이탈 대응)
-function forceNext(room, timeout = false) {
+function forceNext(room, reason) {
   const g = room.game;
-  if (!g) return;
+  if (!g || room.phase === 'lobby' || room.phase === 'end') return false;
   disarm(room);
-  const who = timeout ? '⏰ 시간 초과!' : '⏭️ 방장이 넘겼어요.';
   switch (room.phase) {
-    case 'hint': bot(room, `${who} (${nameOf(room, g.order[g.turnIdx])} 님 차례)`); return submitHint(room, g.order[g.turnIdx], '(패스)');
-    case 'vote': bot(room, `${who} 투표를 마감합니다.`); return closeVote(room);
-    case 'defense': bot(room, who); return submitDefense(room, '(해명 없음)');
-    case 'final': bot(room, `${who} 최종 투표를 마감합니다.`); return closeFinal(room);
-    case 'guess': bot(room, who); return submitGuess(room, '');
+    case 'hint': bot(room, `${reason} ${nameOf(room, g.order[g.turnIdx])} 님 패스`); submitHint(room, g.order[g.turnIdx], '(패스)'); break;
+    case 'vote': bot(room, `${reason} 투표 마감`); closeVote(room); break;
+    case 'defense': bot(room, `${reason} 해명 없이 진행`); submitDefense(room, '(해명 없음)'); break;
+    case 'final': bot(room, `${reason} 찬반 투표 마감`); closeFinal(room); break;
+    case 'guess': bot(room, `${reason} 정답 제출 없음`); submitGuess(room, ''); break;
+  }
+  return true;
+}
+
+function resetToLobby(room) {
+  disarm(room);
+  room.phase = 'lobby';
+  room.game = null;
+  room.players = room.players.filter((p) => p.online || !p.announcedOff);
+}
+
+// 한 판 더: 끝난 판이면 같은 설정으로 바로 새 판
+function quickStart(room) {
+  if (room.phase === 'end') resetToLobby(room);
+  if (room.phase !== 'lobby') return '이미 게임이 진행 중이에요. 그만하려면 /초기화';
+  return startGame(room);
+}
+
+// ---------- 채팅 명령어 (누구나 사용 가능) ----------
+const HELP = `📖 명령어 (누구나 사용 가능)
+/시작 · 게임 시작 (끝난 판이면 같은 설정으로 바로 한 판 더)
+/초기화 · 진행 중인 판을 끝내고 대기실로
+/넘기기 · 잠수한 사람 차례·투표를 넘기기
+/힌트요약 · 지금까지 힌트 다시 보기
+/랭킹 · 승률 랭킹 보기
+/명령어 · 이 도움말`;
+
+function runCommand(room, me, text) {
+  const cmd = text.slice(1).split(/\s+/)[0];
+  switch (cmd) {
+    case '시작': case '게임시작': case '한판더': {
+      const err = quickStart(room);
+      if (err) bot(room, `⚠️ ${err}`);
+      return true;
+    }
+    case '초기화': case '리셋':
+      if (room.phase === 'lobby') { bot(room, '이미 대기실이에요. /시작 으로 시작하세요.'); return true; }
+      resetToLobby(room);
+      bot(room, `🧹 ${me.name} 님이 초기화했어요. (현재 ${room.players.filter((p) => p.online).length}명)\n/시작 으로 새 판!`);
+      return true;
+    case '넘기기': case '스킵': case '패스':
+      if (!forceNext(room, `⏭️ ${me.name} 님이 넘겼어요:`)) bot(room, '지금은 넘길 게 없어요.');
+      return true;
+    case '힌트요약': case '요약': case '힌트':
+      if (!room.game || !room.game.order.some((id) => room.game.hints[id].length)) bot(room, '아직 힌트가 없어요.');
+      else bot(room, `📝 힌트 요약\n${hintSummary(room)}`);
+      return true;
+    case '랭킹': case '전적': case '승률':
+      bot(room, rankingText(room));
+      return true;
+    case '참가':
+      bot(room, `✅ ${me.name} 님은 이미 참가 중이에요.`);
+      return true;
+    case '명령어': case '도움말': case '도움':
+      bot(room, HELP);
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -323,9 +420,9 @@ io.on('connection', (socket) => {
       p = { id: crypto.randomUUID(), name: n, online: true };
       room.players.push(p);
       if (room.phase === 'lobby') bot(room, `✅ ${p.name} 님 참가! (현재 ${room.players.length}명)`);
-      else bot(room, `👀 ${p.name} 님이 들어왔어요. 다음 판부터 참여합니다.`);
+      else bot(room, `👀 ${p.name} 님 입장 · 다음 판부터 참여해요.`);
     } else if (!p.online && p.announcedOff) {
-      bot(room, `🔌 ${p.name} 님이 다시 접속했어요.`);
+      bot(room, `🔌 ${p.name} 님 다시 접속`);
     }
     p.announcedOff = false;
     if (p.socketId && p.socketId !== socket.id) io.sockets.sockets.get(p.socketId)?.disconnect(true);
@@ -350,12 +447,14 @@ io.on('connection', (socket) => {
 
   socket.on('chat', guard((text) => {
     text = clean(text, 200);
-    if (text) pushLog(room, { type: 'chat', from: me.id, name: me.name, text });
+    if (!text) return;
+    pushLog(room, { type: 'chat', from: me.id, name: me.name, text });
+    if (text.startsWith('/')) runCommand(room, me, text);
   }));
 
   socket.on('settings', guard((s) => {
     if (!isHost() || room.phase !== 'lobby') return;
-    if (s.category === '랜덤' || CATEGORIES.includes(s.category)) room.settings.category = s.category;
+    if (Array.isArray(s.categories)) room.settings.categories = s.categories.filter((c) => CATEGORIES.includes(c));
     if (s.mode === 'fool' || s.mode === 'normal') room.settings.mode = s.mode;
     if (s.timers) for (const k of ['hint', 'vote', 'defense']) {
       const v = Number(s.timers[k]);
@@ -364,8 +463,8 @@ io.on('connection', (socket) => {
   }));
 
   socket.on('start', guard(() => {
-    if (!isHost() || room.phase !== 'lobby') return;
-    const err = startGame(room);
+    if (!isHost()) return;
+    const err = quickStart(room);
     if (err) socket.emit('toast', err);
   }));
 
@@ -395,16 +494,12 @@ io.on('connection', (socket) => {
     submitGuess(room, clean(text, 40));
   }));
 
-  socket.on('force', guard(() => { if (isHost()) forceNext(room); }));
+  socket.on('force', guard(() => { forceNext(room, `⏭️ ${me.name} 님이 넘겼어요:`); }));
 
   socket.on('reset', guard(() => {
-    if (!isHost()) return;
-    if (room.phase !== 'end') bot(room, '🧹 방장이 게임을 초기화했습니다.');
-    disarm(room);
-    room.phase = 'lobby';
-    room.game = null;
-    room.players = room.players.filter((p) => p.online);
-    bot(room, `🎭 새 판 대기 중! (현재 ${room.players.length}명)\n방장이 카테고리와 모드를 고르고 시작하세요.`);
+    if (room.phase === 'lobby') return;
+    resetToLobby(room);
+    bot(room, `🧹 ${me.name} 님이 초기화했어요. /시작 으로 새 판!`);
   }));
 
   socket.on('kick', guard((id) => {
@@ -439,7 +534,7 @@ io.on('connection', (socket) => {
         r.players = r.players.filter((x) => x.id !== p.id);
         bot(r, `👋 ${p.name} 님이 나갔어요.`);
       } else if (r.game && r.game.order.includes(p.id)) {
-        bot(r, `📴 ${p.name} 님 연결이 끊겼어요. (방장이 ⏭️ 버튼으로 넘길 수 있어요)`);
+        bot(r, `📴 ${p.name} 님 연결 끊김 (/넘기기 로 차례를 넘길 수 있어요)`);
       }
       if (r.hostId === p.id) {
         const next = r.players.find((x) => x.online);

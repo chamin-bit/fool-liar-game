@@ -3,7 +3,8 @@ const { io } = require('socket.io-client');
 const URL = process.env.URL || 'http://localhost:3123';
 const code = 'test-' + Date.now().toString(36);
 const names = ['차민', '예지', '은주', '유택'];
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const SLOW = Number(process.env.SLOW || 1); // 원격 서버 테스트 시 SLOW=8 등
+const wait = (ms) => new Promise((r) => setTimeout(r, ms > 5000 ? ms + 2000 * SLOW : ms * SLOW));
 const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
 
 (async () => {
@@ -19,7 +20,7 @@ const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
   await wait(200);
   const host = P[0];
   if (host.state.hostId !== host.id) fail('첫 입장자가 방장이 아님');
-  host.s.emit('settings', { category: '음식', mode: 'fool', timers: { hint: 0, vote: 0, defense: 0 } });
+  host.s.emit('settings', { categories: ['음식'], mode: 'fool', timers: { hint: 0, vote: 0, defense: 0 } });
   host.s.emit('start');
   await wait(200);
 
@@ -83,7 +84,7 @@ const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
   // 동률 재투표 + 타이머 테스트
   host.s.emit('reset');
   await wait(100);
-  host.s.emit('settings', { category: '랜덤', mode: 'normal', timers: { hint: 10, vote: 0, defense: 0 } });
+  host.s.emit('settings', { categories: [], mode: 'normal', timers: { hint: 10, vote: 0, defense: 0 } });
   host.s.emit('start');
   await wait(150);
   const liars = P.filter((p) => p.state.mine.liar);
@@ -94,14 +95,49 @@ const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
   await wait(10600);
   if (host.state.game.turnId === t0) fail('타이머 초과 후 차례가 안 넘어감');
   console.log('힌트 타임아웃 자동 패스 OK');
-  host.s.emit('force'); host.s.emit('force'); host.s.emit('force');
-  await wait(200);
-  if (host.state.phase !== 'vote') fail('방장 넘기기로 투표 단계 못 감');
+  // 방장이 아닌 사람도 /넘기기 사용 가능
+  for (let i = 0; i < 6 && host.state.phase === 'hint'; i++) { P[2].s.emit('chat', '/넘기기'); await wait(150); }
+  if (host.state.phase !== 'vote') fail('/넘기기로 투표 단계 못 감');
+  console.log('일반 참가자 /넘기기 OK');
   const [a, b] = host.state.game.order;
-  P.forEach((p, i) => p.s.emit('vote', p.id === a ? b : p.id === b ? a : i % 2 ? a : b));
+  const others = P.filter((p) => p.id !== a && p.id !== b);
+  P.forEach((p) => p.s.emit('vote', p.id === a ? b : p.id === b ? a : p === others[0] ? a : b));
   await wait(200);
   if (!host.state.game.revote) fail('동률인데 재투표 아님: ' + host.state.phase);
   console.log('동률 → 재투표 OK');
+
+  // 전적·랭킹
+  const st = host.state.stats;
+  if (Object.keys(st).length !== 4 || Object.values(st).some((s) => s.games !== 1)) fail('전적 집계 이상 ' + JSON.stringify(st));
+  P[1].s.emit('chat', '/랭킹');
+  await wait(150);
+  if (!host.msgs.slice(-1)[0].text.includes('승률')) fail('/랭킹 응답 없음');
+  console.log('전적·/랭킹 OK');
+
+  // 일반 참가자 /초기화 → /시작, 같은 카테고리에서 단어가 안 겹치는지
+  const WORDS = require('../words');
+  P[3].s.emit('chat', '/초기화');
+  await wait(150);
+  if (host.state.phase !== 'lobby') fail('/초기화 안 됨');
+  host.s.emit('settings', { categories: ['과일'], mode: 'fool', timers: { hint: 0, vote: 0, defense: 0 } });
+  await wait(100);
+  const seen = new Set();
+  const groups = WORDS['과일'];
+  for (let i = 0; i < 20; i++) {
+    P[3].s.emit('chat', i ? '/초기화' : '/명령어');
+    await wait(80);
+    P[2].s.emit('chat', '/시작');
+    await wait(150);
+    if (host.state.phase !== 'hint' || host.state.game.category !== '과일') fail('/시작 안 됨 ' + host.state.phase);
+    const ws = P.map((p) => p.state.mine.word);
+    const cnt = {}; ws.forEach((w) => (cnt[w] = (cnt[w] || 0) + 1));
+    const cw = Object.keys(cnt).find((w) => cnt[w] === 3);
+    const lw = Object.keys(cnt).find((w) => cnt[w] === 1);
+    if (seen.has(cw)) fail(`단어 중복: ${cw}`);
+    seen.add(cw);
+    if (!groups.some((g) => g.includes(cw) && g.includes(lw))) fail(`바보 단어가 같은 묶음이 아님: ${cw} / ${lw}`);
+  }
+  console.log('20판 단어 중복 없음 + 바보 단어 같은 묶음 OK:', [...seen].slice(0, 8).join(', '), '…');
 
   console.log('\nALL PASS ✅');
   P.forEach((p) => p.s.close());
