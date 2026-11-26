@@ -175,7 +175,9 @@ function chooseWords(room, category) {
   if (!options.length) { used.clear(); options = groups.flatMap((g, gi) => g.map((w) => [gi, w])); }
   const [gi, word] = pick(options);
   used.add(word);
-  const liarWord = pick(groups[gi].filter((w) => w !== word));
+  // 바보 모드 라이어 단어: 같은 카테고리지만 다른 묶음(비슷하지 않은 단어)에서 고른다.
+  const others = groups.filter((_, i) => i !== gi).flat();
+  const liarWord = pick(others.length ? others : groups[gi].filter((w) => w !== word));
   return { word, liarWord };
 }
 
@@ -209,7 +211,8 @@ function announceTurn(room) {
 function submitHint(room, id, text) {
   const g = room.game;
   g.hints[id][g.round - 1] = text || '(패스)';
-  bot(room, `💬 ${nameOf(room, id)}: ${g.hints[id][g.round - 1]}`);
+  // 힌트는 채팅에서 눈에 띄는 카드로 보이게 별도 타입으로 보낸다
+  pushLog(room, { type: 'hint', from: id, name: nameOf(room, id), text: g.hints[id][g.round - 1], round: g.round, no: g.turnIdx + 1, total: g.order.length });
   g.turnIdx++;
   if (g.turnIdx < g.order.length) return announceTurn(room);
   bot(room, `📝 힌트 요약\n${hintSummary(room)}\n\n토론하고 아래에서 투표하세요!`);
@@ -230,9 +233,11 @@ function openVote(room, candidates, revote) {
 function castVote(room, voterId, targetId) {
   const g = room.game;
   if (!g.candidates.includes(targetId) || targetId === voterId) return;
+  const first = !(voterId in g.votes);
   g.votes[voterId] = targetId;
   const n = g.order.length;
   const count = Object.keys(g.votes).length;
+  if (first) bot(room, `🗳️ ${nameOf(room, voterId)} 투표 완료 (${count}/${n})`);
   const top = Math.max(...Object.values(tallyVotes(g)));
   if (top > n / 2 && count < n) return closeVote(room, true);
   if (count >= n) closeVote(room);
@@ -272,9 +277,11 @@ function submitDefense(room, text) {
 function castFinal(room, voterId, agree) {
   const g = room.game;
   if (voterId === g.nominee) return;
+  const first = !(voterId in g.finalVotes);
   g.finalVotes[voterId] = !!agree;
   const eligible = g.order.length - 1;
   const vals = Object.values(g.finalVotes);
+  if (first) bot(room, `⚖️ ${nameOf(room, voterId)} 투표 완료 (${vals.length}/${eligible})`);
   const yes = vals.filter(Boolean).length, no = vals.length - yes;
   if (vals.length < eligible && (yes > eligible / 2 || no >= eligible / 2)) return closeFinal(room, true);
   if (vals.length >= eligible) closeFinal(room);

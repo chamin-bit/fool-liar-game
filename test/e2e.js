@@ -135,9 +135,9 @@ const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
     const lw = Object.keys(cnt).find((w) => cnt[w] === 1);
     if (seen.has(cw)) fail(`단어 중복: ${cw}`);
     seen.add(cw);
-    if (!groups.some((g) => g.includes(cw) && g.includes(lw))) fail(`바보 단어가 같은 묶음이 아님: ${cw} / ${lw}`);
+    if (!lw || groups.some((g) => g.includes(cw) && g.includes(lw)) || !groups.flat().includes(lw)) fail(`바보 단어가 다른 묶음이 아님: ${cw} / ${lw}`);
   }
-  console.log('20판 단어 중복 없음 + 바보 단어 같은 묶음 OK:', [...seen].slice(0, 8).join(', '), '…');
+  console.log('20판 단어 중복 없음 + 바보 단어는 같은 카테고리·다른 묶음 OK:', [...seen].slice(0, 8).join(', '), '…');
 
   console.log('\nALL PASS ✅');
   P.forEach((p) => p.s.close());

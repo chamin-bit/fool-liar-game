@@ -121,17 +121,45 @@
         myVote = null; myFinal = null;
         if (!prev || s.phase !== prev.phase) showSummary = false;
       }
+      // 내가 뭔가 해야 하는 순간이 오면 진동 + 패널 반짝임
+      const needMe = (st) => {
+        const x = st && st.game;
+        if (!x || !x.order.includes(st.me)) return '';
+        if (st.phase === 'hint' && x.turnId === st.me) return `hint${x.round}`;
+        if (st.phase === 'vote') return `vote${x.round}${x.revote ? 'r' : ''}`;
+        if (st.phase === 'defense' && x.nominee === st.me) return 'defense';
+        if (st.phase === 'final' && x.nominee !== st.me) return 'final';
+        if (st.phase === 'guess' && st.mine && (st.mine.liar || st.mine.revealedLiar)) return 'guess';
+        return '';
+      };
+      const nowNeed = needMe(s);
+      const alertMe = nowNeed && nowNeed !== needMe(prev);
       render();
+      if (alertMe) {
+        try { navigator.vibrate && navigator.vibrate([120, 60, 120]); } catch {}
+        const A = $('#action');
+        A.classList.remove('pulse'); void A.offsetWidth; A.classList.add('pulse');
+      }
     });
 
     // ---------- 채팅 메시지 ----------
     const fmtTime = (t) => new Date(t).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
     function addMsg(m) {
       const mine = m.from && m.from === (S ? S.me : store.pid(code));
-      // 짧은 봇 알림은 가운데 작은 한 줄로 (공간 절약)
+      // 힌트: 채팅 사이에서 눈에 확 띄는 카드
+      if (m.type === 'hint') {
+        lastSender = null;
+        feed.append(h('div', { class: `hintcard ${mine ? 'mine' : ''}` },
+          h('div', { class: 'hc-head' }, `💬 ${m.name}의 힌트`, h('span', { class: 'hc-no' }, `${m.round > 1 ? `${m.round}R · ` : ''}${m.no}/${m.total}`)),
+          h('div', { class: 'hc-text' }, m.text)));
+        return;
+      }
+      // 짧은 봇 알림은 가운데 한 줄로 (투표 완료 알림은 색으로 강조)
       if (m.type === 'bot' && !m.text.includes('\n') && m.text.length <= 42) {
         lastSender = null;
-        feed.append(h('div', { class: 'msg sys' }, h('div', { class: 'bubble' }, m.text)));
+        const isVote = /투표 완료/.test(m.text);
+        const isTurn = /님 차례/.test(m.text);
+        feed.append(h('div', { class: `msg sys ${isVote ? 'vote' : ''} ${isTurn ? 'turn' : ''}` }, h('div', { class: 'bubble' }, m.text)));
         return;
       }
       const sender = m.type === 'bot' ? 'bot' : m.from;
@@ -259,11 +287,20 @@
       });
       return h('pre', { class: 'summary' }, lines.join('\n'));
     }
+    // 누가 투표했는지: ✅ 완료 / ⏳ 아직
+    function voterChips(ids, votedIds, note) {
+      return h('div', { class: 'voters' },
+        h('span', { class: 'vcount' }, `${votedIds.length}/${ids.length}명 완료`),
+        ids.map((id) => h('span', { class: `vchip ${votedIds.includes(id) ? 'done' : ''}` }, `${votedIds.includes(id) ? '✅' : '⏳'} ${nm(id)}`)),
+        note ? h('span', { class: 'vnote' }, note) : null);
+    }
     function inputRow(id, placeholder, ev, max) {
       const send = () => {
         const v = $('#' + id).value.trim();
         if (!v) return toast('내용을 입력하세요');
         socket.emit(ev, v);
+        toast({ hint: '💬 힌트 제출 완료!', defense: '🎤 해명 제출 완료!', guess: '🎯 정답 제출 완료!' }[ev] || '제출 완료!');
+        try { navigator.vibrate && navigator.vibrate(40); } catch {}
       };
       return h('div', { class: 'row' },
         h('input', { id, placeholder, maxlength: max, autocomplete: 'off', enterkeyhint: 'send', onkeydown: (e) => e.key === 'Enter' && !e.isComposing && send() }),
@@ -283,26 +320,37 @@
         return [head(`🗣️ ${nm(g.turnId)} 님이 힌트 쓰는 중…`, timerEl(), sum), summaryBox(g)];
       }
       if (P === 'vote') {
-        const voted = g.voted.length, n = g.order.length;
-        return [head(g.revote ? '⚖️ 재투표 (동률 후보만)' : '🗳️ 라이어는 누구?', timerEl(), sum), summaryBox(g),
+        const done = g.voted.includes(S.me);
+        const title = done && myVote ? `✅ ${nm(myVote)} 님에게 투표했어요` : g.revote ? '⚖️ 재투표! (동률 후보만)' : '🗳️ 라이어는 누구? 투표하세요';
+        return [head(title, timerEl(), sum), summaryBox(g),
           h('div', { class: 'vote-list' }, g.candidates.filter((id) => id !== S.me).map((id) => h('button', {
             class: `btn ${myVote === id ? 'sel' : ''}`,
-            onclick: () => { myVote = id; socket.emit('vote', id); renderAction(); },
-          }, `${g.order.indexOf(id) + 1}. ${nm(id)}`))),
-          h('p', { class: 'progress' }, `${voted}/${n}명 투표${g.voted.includes(S.me) ? ' · 다시 눌러 바꿀 수 있어요' : ''}`)];
+            onclick: () => {
+              myVote = id; socket.emit('vote', id); renderAction();
+              toast(`🗳️ ${nm(id)} 님에게 투표 완료!`);
+              try { navigator.vibrate && navigator.vibrate(40); } catch {}
+            },
+          }, `${myVote === id ? '✅ ' : ''}${g.order.indexOf(id) + 1}. ${nm(id)}`))),
+          voterChips(g.order, g.voted, done ? '다시 누르면 바꿀 수 있어요' : '')];
       }
       if (P === 'defense') {
         if (g.nominee === S.me) return [head('🎤 지목당했어요! 해명하세요', timerEl(), sum), summaryBox(g), inputRow('defInput', '예) 제 힌트는 모양을 말한 거예요', 'defense', 120)];
         return [head(`🎤 ${nm(g.nominee)} 님 해명 쓰는 중…`, timerEl(), sum), summaryBox(g)];
       }
       if (P === 'final') {
-        const eligible = g.order.length - 1;
-        if (g.nominee === S.me) return [head(`⚖️ 찬반 투표 중… (${g.finalVoted.length}/${eligible})`, timerEl(), sum), summaryBox(g)];
-        return [head(`⚖️ ${nm(g.nominee)} 님이 라이어?`, timerEl(), sum), summaryBox(g),
+        const voters = g.order.filter((id) => id !== g.nominee);
+        if (g.nominee === S.me) return [head('⚖️ 다른 사람들이 찬반 투표 중…', timerEl(), sum), summaryBox(g), voterChips(voters, g.finalVoted)];
+        const pickFinal = (v) => {
+          myFinal = v; socket.emit('final', v); renderAction();
+          toast(v ? '👍 찬성 투표 완료!' : '👎 반대 투표 완료!');
+          try { navigator.vibrate && navigator.vibrate(40); } catch {}
+        };
+        const title = myFinal === true ? '✅ 찬성했어요' : myFinal === false ? '✅ 반대했어요' : `⚖️ ${nm(g.nominee)} 님이 라이어일까요?`;
+        return [head(title, timerEl(), sum), summaryBox(g),
           h('div', { class: 'grid2' },
-            h('button', { class: `btn ${myFinal === true ? 'ok' : ''}`, onclick: () => { myFinal = true; socket.emit('final', true); renderAction(); } }, '👍 찬성'),
-            h('button', { class: `btn ${myFinal === false ? 'danger' : ''}`, onclick: () => { myFinal = false; socket.emit('final', false); renderAction(); } }, '👎 반대')),
-          h('p', { class: 'progress' }, `${g.finalVoted.length}/${eligible}명 투표`)];
+            h('button', { class: `btn ${myFinal === true ? 'ok' : ''}`, onclick: () => pickFinal(true) }, `${myFinal === true ? '✅ ' : ''}👍 찬성`),
+            h('button', { class: `btn ${myFinal === false ? 'danger' : ''}`, onclick: () => pickFinal(false) }, `${myFinal === false ? '✅ ' : ''}👎 반대`)),
+          voterChips(voters, g.finalVoted, myFinal != null ? '다시 누르면 바꿀 수 있어요' : '')];
       }
       if (P === 'guess') {
         if (S.mine && (S.mine.liar || S.mine.revealedLiar)) return [head('🎯 마지막 기회! 시민들의 제시어는?', timerEl(), sum), summaryBox(g), inputRow('guessInput', '정답 단어만 입력', 'guess', 40)];

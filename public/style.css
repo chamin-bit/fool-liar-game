@@ -138,6 +138,37 @@ input:focus, select:focus { border-color: #c8a800; }
 .msg.sys { align-self: center; max-width: 100%; }
 .msg.sys .bubble { background: rgba(0, 0, 0, 0.08); box-shadow: none; border: 0; border-radius: 999px; font-size: 12px; padding: 3px 12px; color: var(--text); }
 
+.msg.sys.vote .bubble { background: #d8f3e5; color: #11633f; font-weight: 700; }
+.msg.sys.turn .bubble { background: rgba(254, 229, 0, 0.55); color: #191919; font-weight: 700; }
+
+/* 힌트 카드: 채팅 사이에서 확 보이게 */
+.hintcard {
+  align-self: stretch; margin: 4px 6px; background: var(--surface); border-radius: 14px;
+  border: 2px solid #fee500; padding: 8px 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  animation: pop 0.35s ease-out;
+}
+.hintcard.mine { background: #fffbd6; }
+.hc-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 700; }
+.hc-no { margin-left: auto; font-weight: 500; }
+.hc-text { font-size: 17px; font-weight: 800; line-height: 1.4; margin-top: 2px; word-break: break-word; color: var(--text); }
+.hintcard.mine .hc-text { color: #191919; }
+@keyframes pop { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* 투표 현황 칩 */
+.voters { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.vcount { font-size: 12px; font-weight: 700; margin-right: 2px; }
+.vchip { font-size: 11.5px; background: var(--bar); color: var(--muted); border-radius: 999px; padding: 2px 8px; }
+.vchip.done { background: #d8f3e5; color: #11633f; font-weight: 700; }
+.vnote { font-size: 11px; color: var(--muted); width: 100%; }
+
+/* 내 차례가 오면 패널 반짝 */
+.action.pulse { animation: pulse 1.2s ease-out 2; }
+@keyframes pulse {
+  0% { box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06), inset 0 0 0 0 rgba(254, 229, 0, 0); }
+  30% { box-shadow: 0 -6px 26px rgba(254, 200, 0, 0.55), inset 0 0 0 3px rgba(254, 229, 0, 1); }
+  100% { box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06), inset 0 0 0 0 rgba(254, 229, 0, 0); }
+}
+
 /* 액션 패널 */
 .action {
   flex: none; background: var(--surface); border-top-left-radius: 16px; border-top-right-radius: 16px;
@@ -183,7 +214,7 @@ input:focus, select:focus { border-color: #c8a800; }
 #room.typing .chatbar { padding-bottom: 6px; }
 
 .toast {
-  position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 50;
-  background: rgba(0, 0, 0, 0.85); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 14px;
-  max-width: calc(100vw - 32px);
+  position: fixed; left: 50%; top: max(64px, calc(env(safe-area-inset-top) + 56px)); transform: translateX(-50%); z-index: 50;
+  background: rgba(17, 99, 63, 0.95); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 15px; font-weight: 700;
+  max-width: calc(100vw - 32px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2); animation: pop 0.25s ease-out;
 }
