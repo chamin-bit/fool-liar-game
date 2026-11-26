@@ -175,9 +175,8 @@ function chooseWords(room, category) {
   if (!options.length) { used.clear(); options = groups.flatMap((g, gi) => g.map((w) => [gi, w])); }
   const [gi, word] = pick(options);
   used.add(word);
-  // 바보 모드 라이어 단어: 같은 카테고리지만 다른 묶음(비슷하지 않은 단어)에서 고른다.
-  const others = groups.filter((_, i) => i !== gi).flat();
-  const liarWord = pick(others.length ? others : groups[gi].filter((w) => w !== word));
+  // 바보 모드 라이어 단어: 같은 카테고리 안에서 완전 랜덤 (비슷한 단어가 걸릴 수도, 완전히 다른 단어일 수도)
+  const liarWord = pick(groups.flat().filter((w) => w !== word));
   return { word, liarWord };
 }
 

@@ -33,7 +33,7 @@ GitHub `main` 브랜치에 push하면 Render가 2~3분 안에 자동으로 다�
 | `/명령어` | 도움말 |
 
 ## 제시어
-- 공개 단어: `words.js` (`|` 구분 = 묶음. 바보 모드 라이어는 시민과 **다른 묶음**의 단어를 받음)
+- 공개 단어: `words.js` (`|` 구분 = 비슷한 단어 묶음. 바보 모드 라이어 단어는 같은 카테고리에서 완전 랜덤)
 - 비공개 카테고리(우리끼리 아는 단어): 저장소에 올리지 않음
   - 로컬: `private-words.json` (.gitignore 처리됨)
   - Render: Environment에 `PRIVATE_WORDS` 변수로 같은 JSON을 넣기
